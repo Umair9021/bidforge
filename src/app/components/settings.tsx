@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { motion } from "motion/react";
 import { OutlineButton } from "./shell";
 import { getSupabase } from "../lib/supabase";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../utils/supabase/info";
 
 type SectionKey = "profile" | "notifications" | "security";
 

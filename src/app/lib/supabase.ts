@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../utils/supabase/info";
 
 // Singleton Supabase client for the frontend.
 // Stored on globalThis so hot-module-reloads and any duplicate module loads

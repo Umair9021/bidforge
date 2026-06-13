@@ -98,7 +98,7 @@ export default function App() {
     // Fetch fresh signed avatar URL if user has one stored
     if (meta.avatar_path) {
       try {
-        const { projectId } = await import("/utils/supabase/info");
+        const { projectId } = await import("../utils/supabase/info");
         const { data: { session } } = await getSupabase().auth.getSession();
         if (session?.access_token) {
           const res = await fetch(
