@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api, pollStatus, rfpNames, type RfpStatus } from "../lib/api";
 import {
   IconUpload,
   IconFileTypePdf,
@@ -20,21 +21,23 @@ type FileRow = {
   size: string;
   icon: any;
   color: string;
-  status: "done" | "processing";
+  status: "done" | "processing" | "failed";
+  rfpId?: string;
+  progress?: number;
+  stage?: RfpStatus;
+  error?: string;
 };
 
-const initial: FileRow[] = [
-  { name: "RFP-2031-SolicitationPackage.pdf", size: "4.8 MB", icon: IconFileTypePdf, color: "var(--accent-red)", status: "done" },
-  { name: "Attachment-A-Tech-Requirements.docx", size: "1.2 MB", icon: IconFileTypeDocx, color: "var(--accent-blue)", status: "done" },
-  { name: "Attachment-B-Pricing-Schedule.xlsx", size: "284 KB", icon: IconFileTypeXls, color: "var(--accent-green)", status: "done" },
-  { name: "Amendment-01.pdf", size: "612 KB", icon: IconFileTypePdf, color: "var(--accent-red)", status: "processing" },
-];
+const initial: FileRow[] = [];
 
-const stages = [
-  { icon: IconBrain, label: "Document parse", status: "done", note: "4 files, 312 pages", pct: 100 },
-  { icon: IconCalendarTime, label: "Deadline extraction", status: "done", note: "12 dates found", pct: 100 },
-  { icon: IconScale, label: "Evaluation weights", status: "done", note: "4 criteria mapped", pct: 100 },
-  { icon: IconShieldCheck, label: "Compliance clauses", status: "processing", note: "27/34 mapped", pct: 78 },
+const PIPELINE: { stage: RfpStatus; label: string; icon: any; pct: number }[] = [
+  { stage: "pending", label: "Queued", icon: IconBrain, pct: 0 },
+  { stage: "extracting", label: "Document parse", icon: IconBrain, pct: 15 },
+  { stage: "ner", label: "Entity extraction", icon: IconCalendarTime, pct: 30 },
+  { stage: "retrieving", label: "Capability matching", icon: IconScale, pct: 50 },
+  { stage: "drafting", label: "Drafting response", icon: IconBrain, pct: 70 },
+  { stage: "scoring", label: "Win scoring", icon: IconShieldCheck, pct: 85 },
+  { stage: "complete", label: "Complete", icon: IconShieldCheck, pct: 100 },
 ];
 
 function iconFor(name: string): { icon: any; color: string } {
@@ -45,19 +48,23 @@ function iconFor(name: string): { icon: any; color: string } {
   return { icon: IconFileTypePdf, color: "var(--text-tertiary)" };
 }
 
-export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
+export function Upload({ onOpen, onUploaded }: { onOpen?: (v: ViewKey) => void; onUploaded?: () => void }) {
   const [files, setFiles] = useState<FileRow[]>(initial);
-  const [form, setForm] = useState({
-    name: "DOT Infrastructure Modernization",
-    client: "US Dept. of Transportation",
-    manager: "Maya Kapoor",
-    value: "$4.2M",
-  });
+  const [form, setForm] = useState({ name: "", client: "", manager: "", value: "" });
   const inputRef = useRef<HTMLInputElement>(null);
+  const stoppers = useRef<Map<string, () => void>>(new Map());
 
-  const onFilesPicked = (list: FileList | null) => {
+  useEffect(() => {
+    return () => {
+      stoppers.current.forEach((stop) => stop());
+      stoppers.current.clear();
+    };
+  }, []);
+
+  const onFilesPicked = async (list: FileList | null) => {
     if (!list || !list.length) return;
-    const next: FileRow[] = Array.from(list).map((f) => {
+    const picks = Array.from(list);
+    const queued: FileRow[] = picks.map((f) => {
       const { icon, color } = iconFor(f.name);
       return {
         name: f.name,
@@ -65,18 +72,75 @@ export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
         icon,
         color,
         status: "processing",
+        progress: 0,
+        stage: "pending",
       };
     });
-    setFiles((prev) => [...prev, ...next]);
-    toast.success(`${next.length} file${next.length > 1 ? "s" : ""} queued`, {
-      description: "NER pipeline starting...",
+    setFiles((prev) => [...prev, ...queued]);
+    toast.success(`${picks.length} file${picks.length > 1 ? "s" : ""} queued`, {
+      description: "Uploading to extraction pipeline...",
     });
-    setTimeout(() => {
-      setFiles((prev) =>
-        prev.map((f) => (next.find((n) => n.name === f.name) ? { ...f, status: "done" } : f))
-      );
-      toast.success("Parsing complete", { description: `${next.length} new file(s) processed` });
-    }, 1800);
+
+    for (const file of picks) {
+      try {
+        const { rfp_id } = await api.upload(file);
+        rfpNames.set(rfp_id, file.name);
+        setFiles((prev) =>
+          prev.map((f) => (f.name === file.name ? { ...f, rfpId: rfp_id } : f))
+        );
+        onUploaded?.();
+        const stop = pollStatus(rfp_id, (s) => {
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.rfpId === rfp_id
+                ? {
+                    ...f,
+                    stage: s.status,
+                    progress: s.progress ?? f.progress,
+                    status:
+                      s.status === "complete"
+                        ? "done"
+                        : s.status === "failed"
+                        ? "failed"
+                        : "processing",
+                  }
+                : f
+            )
+          );
+          if (s.status === "complete") {
+            toast.success("Parsing complete", { description: file.name });
+            stoppers.current.delete(rfp_id);
+          } else if (s.status === "failed") {
+            api
+              .result(rfp_id)
+              .then((r: any) => {
+                const reason = r?.error || "Backend processing failed";
+                setFiles((prev) =>
+                  prev.map((f) => (f.rfpId === rfp_id ? { ...f, error: reason } : f))
+                );
+                toast.error("Parsing failed", { description: `${file.name}: ${reason}` });
+              })
+              .catch((e) => {
+                setFiles((prev) =>
+                  prev.map((f) => (f.rfpId === rfp_id ? { ...f, error: e?.message ?? "Failed" } : f))
+                );
+                toast.error("Parsing failed", { description: file.name });
+              });
+            stoppers.current.delete(rfp_id);
+          }
+        });
+        stoppers.current.set(rfp_id, stop);
+      } catch (err: any) {
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.name === file.name
+              ? { ...f, status: "failed", error: err?.message ?? "Upload failed" }
+              : f
+          )
+        );
+        toast.error("Upload failed", { description: err?.message ?? file.name });
+      }
+    }
   };
 
   const onDrop = (e: React.DragEvent) => {
@@ -85,7 +149,16 @@ export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
   };
 
   const remove = (name: string) => {
-    setFiles((f) => f.filter((x) => x.name !== name));
+    setFiles((prev) => {
+      const row = prev.find((x) => x.name === name);
+      if (row?.rfpId) {
+        stoppers.current.get(row.rfpId)?.();
+        stoppers.current.delete(row.rfpId);
+        api.delete(row.rfpId).catch(() => {});
+        rfpNames.remove(row.rfpId);
+      }
+      return prev.filter((x) => x.name !== name);
+    });
     toast(`Removed ${name}`);
   };
 
@@ -165,7 +238,15 @@ export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
                   <Icon size={16} stroke={1.5} style={{ color: f.color }} className="shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="truncate" style={{ fontSize: 12 }}>{f.name}</div>
-                    <div className="text-text-tertiary" style={{ fontSize: 10 }}>{f.size}</div>
+                    <div className="text-text-tertiary" style={{ fontSize: 10 }}>
+                      {f.size}
+                      {f.status === "failed" && (
+                        <span style={{ color: "var(--accent-red)" }}>
+                          {" · "}
+                          {f.error ?? "Backend processing failed"}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {f.status === "done" ? (
                     <span
@@ -175,13 +256,25 @@ export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
                       <IconCircleCheckFilled size={12} />
                       <span className="hidden sm:inline">Parsed</span>
                     </span>
+                  ) : f.status === "failed" ? (
+                    <span
+                      className="flex items-center gap-1"
+                      style={{ fontSize: 11, color: "var(--accent-red)" }}
+                      title={f.error}
+                    >
+                      <IconX size={12} />
+                      <span className="hidden sm:inline">Failed</span>
+                    </span>
                   ) : (
                     <span
                       className="flex items-center gap-1 text-muted-foreground"
                       style={{ fontSize: 11 }}
                     >
                       <IconLoader2 size={12} className="animate-spin" />
-                      <span className="hidden sm:inline">Processing</span>
+                      <span className="hidden sm:inline">
+                        {f.stage ?? "Processing"}
+                        {typeof f.progress === "number" ? ` ${f.progress}%` : ""}
+                      </span>
                     </span>
                   )}
                   <button
@@ -258,58 +351,60 @@ export function Upload({ onOpen }: { onOpen?: (v: ViewKey) => void }) {
           </div>
         </div>
         <div className="p-4 space-y-3">
-          {stages.map((s) => {
-            const Icon = s.icon;
-            const done = s.status === "done";
-            return (
-              <div key={s.label} className="flex items-start gap-2.5">
-                <div
-                  className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-                  style={{
-                    background: done ? "var(--accent-green-bg)" : "var(--secondary)",
-                    color: done ? "var(--accent-green)" : "var(--text-tertiary)",
-                  }}
-                >
-                  <Icon size={13} stroke={1.75} />
-                </div>
-                <div className="flex-1 min-w-0">
+          {files.filter((f) => f.status !== "done").length === 0 && (
+            <div className="text-text-tertiary" style={{ fontSize: 11 }}>
+              No active uploads.
+            </div>
+          )}
+          {files
+            .filter((f) => f.status === "processing" || f.status === "failed")
+            .map((f) => {
+              const currentIdx = PIPELINE.findIndex((p) => p.stage === f.stage);
+              return (
+                <div key={f.name} className="space-y-2">
                   <div className="flex items-center justify-between" style={{ fontSize: 12 }}>
-                    <span style={{ fontWeight: 500 }}>{s.label}</span>
-                    {done ? (
-                      <IconCircleCheckFilled size={12} style={{ color: "var(--accent-green)" }} />
-                    ) : (
-                      <IconLoader2 size={12} className="animate-spin text-muted-foreground" />
-                    )}
+                    <span className="truncate flex-1" style={{ fontWeight: 500 }}>{f.name}</span>
+                    <span className="text-text-tertiary tabular-nums" style={{ fontSize: 11 }}>
+                      {f.progress ?? 0}%
+                    </span>
                   </div>
-                  <div className="text-text-tertiary" style={{ fontSize: 11 }}>{s.note}</div>
-                  <div
-                    className="mt-1.5 w-full rounded-full bg-muted overflow-hidden"
-                    style={{ height: 4 }}
-                  >
-                    <div
-                      className="h-full rounded-full"
-                      style={{ width: `${s.pct}%`, background: "var(--accent-green)" }}
-                    />
+                  <div className="space-y-1.5">
+                    {PIPELINE.filter((p) => p.stage !== "pending" && p.stage !== "complete").map((p, idx) => {
+                      const done = currentIdx > idx + 1 || f.stage === "complete";
+                      const active = currentIdx === idx + 1;
+                      return (
+                        <div key={p.stage} className="flex items-center gap-2" style={{ fontSize: 11 }}>
+                          <div
+                            className="w-5 h-5 rounded flex items-center justify-center shrink-0"
+                            style={{
+                              background: done
+                                ? "var(--accent-green-bg)"
+                                : active
+                                ? "var(--accent-blue-bg)"
+                                : "var(--secondary)",
+                              color: done
+                                ? "var(--accent-green)"
+                                : active
+                                ? "var(--accent-blue)"
+                                : "var(--text-tertiary)",
+                            }}
+                          >
+                            {done ? (
+                              <IconCircleCheckFilled size={11} />
+                            ) : active ? (
+                              <IconLoader2 size={11} className="animate-spin" />
+                            ) : (
+                              <p.icon size={11} stroke={1.75} />
+                            )}
+                          </div>
+                          <span className={done || active ? "" : "text-text-tertiary"}>{p.label}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-        <div
-          className="px-4 py-2.5 border-t border-border/80 flex items-center justify-between"
-          style={{ borderTopWidth: "0.5px" }}
-        >
-          <span className="text-text-tertiary" style={{ fontSize: 11 }}>ETA &lt; 30s</span>
-          <OutlineButton
-            onClick={() =>
-              toast("Raw NER output", {
-                description: '{"entities":[{"type":"DEADLINE","value":"2026-07-14"}, ...]}',
-              })
-            }
-          >
-            View raw
-          </OutlineButton>
+              );
+            })}
         </div>
       </div>
     </div>

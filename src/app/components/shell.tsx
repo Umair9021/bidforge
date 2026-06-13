@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import {
   IconLayoutDashboard,
-  IconFolders,
   IconUpload,
   IconChartHistogram,
   IconBell,
@@ -15,8 +14,10 @@ import {
   IconArrowLeft,
   IconLogout,
   IconUser,
+  IconTrash,
 } from "@tabler/icons-react";
 import type { UserProfile } from "../App";
+import { api, rfpNames, type RfpListItem } from "../lib/api";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { ThemeToggle } from "./reactbits";
@@ -26,18 +27,8 @@ export type ViewKey = "dashboard" | "workspace" | "upload" | "analytics" | "sett
 
 const NAV: { key: ViewKey | string; label: string; icon: any; disabled?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", icon: IconLayoutDashboard },
-  { key: "workspace", label: "Workspace", icon: IconFolders },
   { key: "upload", label: "Upload", icon: IconUpload },
   { key: "analytics", label: "Analytics", icon: IconChartHistogram },
-];
-
-const WORKSPACES = [
-  { id: "RFP-2031", name: "DOT Infrastructure", status: "go" },
-  { id: "RFQ-1188", name: "Cloud Migration", status: "go" },
-  { id: "RFP-2044", name: "AI Risk Platform", status: "go" },
-  { id: "RFP-1972", name: "Smart Grid", status: "nogo" },
-  { id: "RFP-2055", name: "Naval Logistics", status: "go" },
-  { id: "RFQ-1201", name: "FedRAMP IL5", status: "nogo" },
 ];
 
 export function Shell({
@@ -53,6 +44,9 @@ export function Shell({
   onOpenInbox,
   onLogout,
   onBackHome,
+  workspaces = [],
+  onOpenRfp,
+  onDeleteRfp,
   children,
 }: {
   view: ViewKey;
@@ -67,8 +61,23 @@ export function Shell({
   onOpenInbox?: () => void;
   onLogout?: () => void;
   onBackHome?: () => void;
+  workspaces?: RfpListItem[];
+  onOpenRfp?: (id: string) => void;
+  onDeleteRfp?: (id: string) => void;
   children: React.ReactNode;
 }) {
+
+  const deleteRfp = async (id: string, name: string) => {
+    if (!window.confirm(`Delete ${name}?`)) return;
+    try {
+      await api.delete(id);
+      rfpNames.remove(id);
+      onDeleteRfp?.(id);
+      toast.success("Deleted");
+    } catch (e: any) {
+      toast.error("Delete failed", { description: e?.message });
+    }
+  };
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -284,34 +293,50 @@ export function Shell({
               <IconChevronDown size={11} className="text-text-tertiary" />
             </div>
             <div className="space-y-0.5">
-              {WORKSPACES.map((w) => (
-                <button
-                  key={w.id}
-                  onClick={() => {
-                    toast(`Opened ${w.id}`, { description: w.name });
-                    handleNav("workspace");
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors text-left"
-                  style={{ fontSize: 12 }}
-                >
-                  <span
-                    className="shrink-0 rounded-full"
-                    style={{
-                      width: 7,
-                      height: 7,
-                      background:
-                        w.status === "go" ? "var(--accent-green)" : "var(--accent-red)",
-                    }}
-                  />
-                  <span className="truncate">{w.id}</span>
-                  <span
-                    className="ml-auto text-text-tertiary truncate"
-                    style={{ fontSize: 10, maxWidth: 90 }}
+              {workspaces.length === 0 && (
+                <div className="px-2.5 py-2 text-text-tertiary" style={{ fontSize: 11 }}>
+                  No RFPs yet
+                </div>
+              )}
+              {workspaces.map((w) => {
+                const color =
+                  w.status === "complete"
+                    ? "var(--accent-green)"
+                    : w.status === "failed"
+                    ? "var(--accent-red)"
+                    : "var(--accent-amber)";
+                const label = rfpNames.get(w.rfp_id) ?? w.rfp_id;
+                return (
+                  <div
+                    key={w.rfp_id}
+                    className="group flex items-center gap-2 px-2.5 py-1.5 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                    style={{ fontSize: 12 }}
                   >
-                    {w.name.split(" ")[0]}
-                  </span>
-                </button>
-              ))}
+                    <button
+                      onClick={() => {
+                        onOpenRfp?.(w.rfp_id);
+                        setMobileOpen(false);
+                      }}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    >
+                      <span
+                        className="shrink-0 rounded-full"
+                        style={{ width: 7, height: 7, background: color }}
+                      />
+                      <span className="truncate" title={w.rfp_id}>
+                        {label}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => deleteRfp(w.rfp_id, label)}
+                      aria-label="Delete"
+                      className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded hover:bg-card flex items-center justify-center text-text-tertiary hover:text-accent-red transition-opacity"
+                    >
+                      <IconTrash size={11} stroke={1.75} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

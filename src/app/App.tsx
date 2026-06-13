@@ -18,36 +18,25 @@ import {
 import { ActionSearchPalette, type BidResult } from "./components/action-search-bar";
 import { useAuthFlow, useConfirm } from "./components/auth-modals";
 import { getSupabase } from "./lib/supabase";
+import { api, rfpNames, type RfpListItem } from "./lib/api";
 import {
   IconPlus,
   IconDownload,
   IconLayoutDashboard,
-  IconFolders,
   IconCloudUpload,
   IconChartHistogram,
-  IconSparkles,
-  IconShieldCheck,
   IconFileText,
 } from "@tabler/icons-react";
 
 const meta: Record<ViewKey, { title: string; subtitle: string }> = {
   dashboard: { title: "Dashboard", subtitle: "Overview of pipeline, bids, and AI activity" },
-  workspace: { title: "RFP-2031", subtitle: "Workspace · last sync 12m ago" },
+  workspace: { title: "Workspace", subtitle: "RFP detail" },
   upload: { title: "Upload & Intake", subtitle: "Add new RFP, RFQ, or tender" },
   analytics: { title: "Analytics", subtitle: "Pipeline health and win distribution" },
   settings: { title: "Settings", subtitle: "Manage your account and workspace preferences" },
 };
 
-const inbox: InboxItem[] = [
-  { id: "1", text: "RFP-2044 compliance check passed (10/10 controls)", time: "12m ago", tone: "success", hint: "All clear" },
-  { id: "2", text: "RFP-2031 flagged 2 gaps in past-performance section", time: "1h ago", tone: "warn", hint: "Needs review" },
-  { id: "3", text: "Maya regenerated Technical Approach for RFP-2031", time: "3h ago", tone: "info" },
-  { id: "4", text: "Draft v2 saved for RFQ-1188", time: "5h ago", tone: "success" },
-  { id: "5", text: "RFP-1972 win probability dropped below threshold (41%)", time: "7h ago", tone: "danger", hint: "Action needed" },
-  { id: "6", text: "AI model v4.2 deployed — scores refreshed", time: "9h ago", tone: "info" },
-  { id: "7", text: "RFP-2055 deadline reminder set", time: "12h ago", tone: "info" },
-  { id: "8", text: "Capability Library updated with 3 new entries", time: "1d ago", tone: "info" },
-];
+const inbox: InboxItem[] = [];
 
 type AppRoute = "home" | ViewKey;
 
@@ -61,10 +50,28 @@ export type UserProfile = {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>("home");
   const [view, setView] = useState<ViewKey>("dashboard");
+  const [selectedRfpId, setSelectedRfpId] = useState<string | null>(null);
+  const [rfpList, setRfpList] = useState<RfpListItem[]>([]);
   const enterApp = (v: ViewKey = "dashboard") => {
     setView(v);
     setRoute(v);
   };
+  const openRfp = (id: string) => {
+    setSelectedRfpId(id);
+    setView("workspace");
+    setRoute("workspace");
+  };
+  const refreshRfpList = async () => {
+    try {
+      const list = await api.list();
+      setRfpList(list.filter((r) => !!rfpNames.get(r.rfp_id)));
+    } catch {
+      setRfpList([]);
+    }
+  };
+  useEffect(() => {
+    if (route !== "home") refreshRfpList();
+  }, [route]);
   const [dark, setDark] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
@@ -159,35 +166,34 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const banners = [
-    { text: "RFP-2031 is due in 5 days · compliance check pending", cta: "Review", target: "workspace" as ViewKey },
-    { text: "AI model v4.2 deployed — win-probability scores refreshed", cta: "View dashboard", target: "dashboard" as ViewKey },
-    { text: "3 new tenders matched your capability profile this morning", cta: "Add a bid", target: "upload" as ViewKey },
-  ];
+  const banners: { text: string; cta: string; target: ViewKey }[] = [];
 
-  const bids: BidResult[] = [
-    { id: "RFP-2031", title: "DOT Infrastructure Modernization", owner: "Maya Chen", category: "Federal · Infra", year: 2026, amount: "$4.2M", due: "in 5 days", status: "go", thumbHue: 210 },
-    { id: "RFP-2044", title: "AI Risk Assessment Platform", owner: "Diego Park", category: "Civilian · AI", year: 2026, amount: "$2.9M", due: "in 3 days", status: "go", thumbHue: 265 },
-    { id: "RFQ-1188", title: "Cloud Migration & SecOps", owner: "Priya Shah", category: "Commercial · Cloud", year: 2026, amount: "$1.8M", due: "in 12 days", status: "go", thumbHue: 175 },
-    { id: "RFP-1972", title: "Smart Grid Analytics", owner: "Sam Iyer", category: "Energy · Analytics", year: 2025, amount: "$3.1M", due: "Closed", status: "lost", thumbHue: 35 },
-    { id: "RFP-2055", title: "Naval Logistics Orchestration", owner: "Eve Tanaka", category: "DoD · Logistics", year: 2026, amount: "$6.4M", due: "in 21 days", status: "draft", thumbHue: 130 },
-    { id: "RFQ-1201", title: "FedRAMP IL5 Enclave Buildout", owner: "Noah Kim", category: "Federal · Security", year: 2026, amount: "$2.2M", due: "in 9 days", status: "nogo", thumbHue: 0 },
-  ];
+  const bids: BidResult[] = rfpList.map((r) => ({
+    id: r.rfp_id,
+    title: rfpNames.get(r.rfp_id) ?? r.rfp_id,
+    owner: "",
+    category: r.status,
+    year: new Date(r.created_at).getFullYear(),
+    amount: "",
+    due: new Date(r.created_at).toLocaleDateString(),
+    status: r.status === "complete" ? "go" : r.status === "failed" ? "nogo" : "draft",
+    thumbHue: 210,
+  }));
 
   const commands: CommandItem[] = [
     { id: "go-dash", label: "Go to Dashboard", group: "Navigate", icon: <IconLayoutDashboard size={14} />, shortcut: "g d", onRun: () => setView("dashboard") },
-    { id: "go-ws", label: "Open Workspace", group: "Navigate", icon: <IconFolders size={14} />, shortcut: "g w", onRun: () => setView("workspace") },
     { id: "go-up", label: "Upload & Intake", group: "Navigate", icon: <IconCloudUpload size={14} />, shortcut: "g u", onRun: () => setView("upload") },
     { id: "go-an", label: "Open Analytics", group: "Navigate", icon: <IconChartHistogram size={14} />, shortcut: "g a", onRun: () => setView("analytics") },
-    { id: "new-bid", label: "Start a new bid", group: "Actions", icon: <IconPlus size={14} />, onRun: () => { setView("upload"); toast.success("New bid started"); } },
-    { id: "regen", label: "Regenerate all proposal sections", group: "Actions", icon: <IconSparkles size={14} />, onRun: () => toast.success("Regenerating all sections...", { description: "~18 seconds" }) },
-    { id: "compliance", label: "Run compliance check on current bid", group: "Actions", icon: <IconShieldCheck size={14} />, onRun: () => toast.success("Compliance check started") },
-    { id: "export", label: "Export current proposal as PDF", group: "Actions", icon: <IconDownload size={14} />, onRun: () => toast.success("PDF export queued") },
+    { id: "new-bid", label: "Start a new bid", group: "Actions", icon: <IconPlus size={14} />, onRun: () => { setView("upload"); } },
     { id: "inbox", label: "Open Inbox", group: "Quick", icon: <IconFileText size={14} />, onRun: () => setInboxOpen(true) },
     { id: "theme", label: dark ? "Switch to Light mode" : "Switch to Dark mode", group: "Quick", onRun: () => setDark(!dark) },
-    { id: "rfp-2031", label: "RFP-2031 · DOT Infrastructure", hint: "$4.2M · due 5 days", group: "Open bid", onRun: () => setView("workspace") },
-    { id: "rfp-2044", label: "RFP-2044 · AI Risk Assessment Platform", hint: "$2.9M · due 3 days", group: "Open bid", onRun: () => setView("workspace") },
-    { id: "rfq-1188", label: "RFQ-1188 · Cloud Migration & SecOps", hint: "$1.8M · due 12 days", group: "Open bid", onRun: () => setView("workspace") },
+    ...rfpList.map((r) => ({
+      id: r.rfp_id,
+      label: rfpNames.get(r.rfp_id) ?? r.rfp_id,
+      hint: `${r.status} · ${new Date(r.created_at).toLocaleDateString()}`,
+      group: "Open bid",
+      onRun: () => openRfp(r.rfp_id),
+    })),
   ];
 
   const actions =
@@ -240,16 +246,32 @@ export default function App() {
 
   return (
     <div className="size-full flex flex-col">
-      <NotificationBar
-        messages={banners}
-        onAction={(i) => navigate(banners[i].target)}
-      />
+      {banners.length > 0 && (
+        <NotificationBar
+          messages={banners}
+          onAction={(i) => navigate(banners[i].target)}
+        />
+      )}
       <div className="flex-1 min-h-0">
         <Shell
           view={view}
           setView={setView}
-          title={meta[view].title}
+          title={
+            view === "workspace" && selectedRfpId
+              ? rfpNames.get(selectedRfpId) ?? selectedRfpId
+              : meta[view].title
+          }
           subtitle={meta[view].subtitle}
+          workspaces={rfpList}
+          onOpenRfp={openRfp}
+          onDeleteRfp={(id) => {
+            setRfpList((prev) => prev.filter((r) => r.rfp_id !== id));
+            if (selectedRfpId === id) {
+              setSelectedRfpId(null);
+              setView("dashboard");
+              setRoute("dashboard");
+            }
+          }}
           actions={actions}
           dark={dark}
           setDark={setDark}
@@ -277,10 +299,12 @@ export default function App() {
             })
           }
         >
-          <PageTransition keyId={view}>
-            {view === "dashboard" && <Dashboard onOpen={setView} />}
-            {view === "workspace" && <Workspace />}
-            {view === "upload" && <Upload onOpen={setView} />}
+          <PageTransition keyId={view + (selectedRfpId ?? "")}>
+            {view === "dashboard" && (
+              <Dashboard onOpen={setView} onOpenRfp={openRfp} onChanged={refreshRfpList} />
+            )}
+            {view === "workspace" && <Workspace rfpId={selectedRfpId} />}
+            {view === "upload" && <Upload onOpen={setView} onUploaded={refreshRfpList} />}
             {view === "analytics" && <Analytics />}
             {view === "settings" && <Settings dark={dark} setDark={setDark} onProfileUpdate={refreshUser} />}
           </PageTransition>
@@ -291,10 +315,7 @@ export default function App() {
         onClose={() => setPaletteOpen(false)}
         bids={bids}
         actions={commands}
-        onOpenBid={(b) => {
-          toast.success(`Opening ${b.id}`, { description: b.title });
-          navigate("workspace");
-        }}
+        onOpenBid={(b) => openRfp(b.id)}
         onQuickAction={(b, kind) => {
           if (kind === "favorite") toast.success(`Starred ${b.id}`);
           else toast.success(`Exporting ${b.id}…`, { description: "PDF queued" });
